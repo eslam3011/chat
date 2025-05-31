@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>مشاهدة جماعية</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      background: #111;
+      color: #fff;
+      font-family: sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 0;
+    }
+
+    input, button {
+      padding: 10px;
+      margin: 5px;
+      border-radius: 6px;
+      border: none;
+    }
+
+    button {
+      cursor: pointer;
+      background: #00ffaa;
+      color: #000;
+      font-weight: bold;
+    }
+
+    #setup input {
+      width: 300px;
+    }
+
+    .video-container {
+      max-width: 800px;
+      margin: 40px auto;
+      background-color: #1e1e1e;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 0 20px #000;
+      position: relative;
+    }
+
+    .video-container:fullscreen {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .video-player {
+      width: 100%;
+      height: auto;
+      max-height: 100vh;
+      background: #000;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      justify-content: space-between;
+      background: #2b2b2b;
+      padding: 6px;
+      color: #fff;
+      gap: 4px;
+      font-size: 12px;
+    }
+
+    .controls button {
+      background: transparent;
+      border: none;
+      font-size: 20px;
+      color: #00ffaa;
+      cursor: pointer;
+      min-width: 36px;
+    }
+
+    .controls input[type="range"] {
+      flex: 1;
+      margin: 0 6px;
+      accent-color: #00ffaa;
+    }
+
+    .controls span {
+      font-family: monospace;
+      font-size: 12px;
+      color: #ccc;
+      white-space: nowrap;
+    }
+
+    #voice-chat-btn {
+      margin-top: 20px;
+      padding: 10px 20px;
+      background: #ff0055;
+      color: white;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎥 مشاهدة جماعية</h1>
+
+  <div id="setup">
+    <button onclick="showCreate()">إنشاء غرفة</button>
+    <button onclick="showJoin()">الانضمام لغرفة</button>
+    <div id="create" style="display:none">
+      <input id="create-room" placeholder="اسم الغرفة" />
+      <input id="video-url" placeholder="رابط الفيديو" />
+      <button onclick="createRoom()">دخول</button>
+    </div>
+    <div id="join" style="display:none">
+      <input id="join-room" placeholder="اسم الغرفة" />
+      <button onclick="joinRoom()">دخول</button>
+    </div>
+  </div>
+
+  <div class="video-container" id="player" style="display:none">
+    <video id="video" class="video-player" controls>
+      المتصفح لا يدعم الفيديو.
+    </video>
+    <div class="controls">
+      <button onclick="seek(-10)">⏪</button>
+      <button onclick="togglePlay()" id="play-btn">▶️</button>
+      <button onclick="seek(10)">⏩</button>
+      <input type="range" id="progress" value="0" />
+      <span id="time">00:00 / 00:00</span>
+      <button onclick="toggleFullScreen()">⛶</button>
+    </div>
+    <button id="voice-chat-btn" onclick="toggleVoiceChat()">🔇 تشغيل المايك</button>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const video = document.getElementById('video');
+    const playBtn = document.getElementById('play-btn');
+    const progress = document.getElementById('progress');
+    const time = document.getElementById('time');
+    const voiceBtn = document.getElementById('voice-chat-btn');
+    let room = '';
+    let preventEmit = false;
+    let syncLock = false;
+    let localStream = null;
+    let peerConnections = {};
+
+    function showCreate() {
+      document.getElementById('create').style.display = 'block';
+      document.getElementById('join').style.display = 'none';
+    }
+
+    function showJoin() {
+      document.getElementById('join').style.display = 'block';
+      document.getElementById('create').style.display = 'none';
+    }
+
+    function createRoom() {
+      room = document.getElementById('create-room').value.trim();
+      const videoUrl = document.getElementById('video-url').value.trim();
+      if (!room || !videoUrl) {
+        alert('من فضلك أدخل اسم الغرفة ورابط الفيديو');
+        return;
+      }
+      socket.emit('join-room', { room, videoUrl });
+      showPlayer();
+    }
+
+    function joinRoom() {
+      room = document.getElementById('join-room').value.trim();
+      if (!room) {
+        alert('من فضلك أدخل اسم الغرفة');
+        return;
+      }
+      socket.emit('join-room', { room });
+      showPlayer();
+    }
+
+    function showPlayer() {
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('player').style.display = 'block';
+    }
+
+    function togglePlay() {
+      if (video.paused) {
+        socket.emit('play', video.currentTime);
+        video.play();
+      } else {
+        socket.emit('pause', video.currentTime);
+        video.pause();
+      }
+    }
+
+    function seek(seconds) {
+      let newTime = video.currentTime + seconds;
+      if (newTime < 0) newTime = 0;
+      if (newTime > video.duration) newTime = video.duration;
+      socket.emit('seek', newTime);
+      video.currentTime = newTime;
+    }
+
+    function toggleFullScreen() {
+      const videoContainer = document.querySelector('.video-container');
+      if (!document.fullscreenElement) {
+        videoContainer.requestFullscreen().catch(err => {
+          alert(`خطأ في ملء الشاشة: ${err.message}`);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    video.addEventListener('play', () => {
+      if (!preventEmit) socket.emit('play', video.currentTime);
+      playBtn.textContent = '⏸️';
+    });
+
+    video.addEventListener('pause', () => {
+      if (!preventEmit) socket.emit('pause', video.currentTime);
+      playBtn.textContent = '▶️';
+    });
+
+    video.addEventListener('timeupdate', () => {
+      const percent = (video.currentTime / video.duration) * 100;
+      progress.value = percent;
+      time.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+    });
+
+    progress.addEventListener('input', () => {
+      const seekTime = (progress.value / 100) * video.duration;
+      socket.emit('seek', seekTime);
+      video.currentTime = seekTime;
+    });
+
+    function formatTime(t) {
+      const m = Math.floor(t / 60).toString().padStart(2, '0');
+      const s = Math.floor(t % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    // استقبال حالة الفيديو
+    socket.on('init-video', ({ videoUrl, currentTime, isPlaying }) => {
+      video.src = videoUrl;
+      video.currentTime = currentTime || 0;
+      if (isPlaying) video.play();
+      else video.pause();
+    });
+
+    socket.on('play', (time) => {
+      syncLock = true;
+      video.currentTime = time + 0.1;
+      video.play();
+      playBtn.textContent = '⏸️';
+      setTimeout(() => syncLock = false, 300);
+    });
+
+    socket.on('pause', (time) => {
+      syncLock = true;
+      video.currentTime = time;
+      video.pause();
+      playBtn.textContent = '▶️';
+      setTimeout(() => syncLock = false, 300);
+    });
+
+    socket.on('seek', (time) => {
+      video.currentTime = time;
+    });
+
+    // 🔊 صوت جماعي (WebRTC)
+    async function toggleVoiceChat() {
+      if (!localStream) {
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          voiceBtn.textContent = '🔈 إيقاف المايك';
+          socket.emit('start-voice', room);
+          // أضف المسارات للاتصالات الحالية
+          for (let id in peerConnections) {
+            const pc = peerConnections[id];
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+          }
+        } catch (err) {
+          alert('فشل في الوصول للمايكروفون: ' + err.message);
+        }
+      } else {
+        // إيقاف المايك وإغلاق المسارات
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+        voiceBtn.textContent = '🔇 تشغيل المايك';
+        // اغلق كل الاتصالات
+        for (let id in peerConnections) {
+          peerConnections[id].close();
+          delete peerConnections[id];
+        }
+      }
+    }
+
+    // استقبال طلبات WebRTC signaling
+    socket.on('start-voice', async (userId) => {
+      const pc = createPeerConnection(userId);
+      peerConnections[userId] = pc;
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      }
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit('offer', { to: userId, offer });
+    });
+
+    socket.on('offer', async ({ from, offer }) => {
+      const pc = createPeerConnection(from);
+      peerConnections[from] = pc;
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socket.emit('answer', { to: from, answer });
+    });
+
+    socket.on('answer', async ({ from, answer }) => {
+      const pc = peerConnections[from];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    });
+
+    socket.on('ice-candidate', ({ from, candidate }) => {
+      const pc = peerConnections[from];
+      if (pc && candidate) {
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    function createPeerConnection(userId) {
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+        ],
+      });
+
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { to: userId, candidate: event.candidate });
+        }
+      };
+
+      pc.ontrack = event => {
+        // صوت المستخدم الآخر: نحتاج لتشغيله
+        const audio = document.getElementById(`audio-${userId}`) || document.createElement('audio');
+        audio.id = `audio-${userId}`;
+        audio.autoplay = true;
+        audio.srcObject = event.streams[0];
+        if (!document.body.contains(audio)) {
+          document.body.appendChild(audio);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          const audio = document.getElementById(`audio-${userId}`);
+          if (audio) {
+            audio.srcObject = null;
+            audio.remove();
+          }
+          delete peerConnections[userId];
+        }
+      };
+
+      return pc;
+    }
+
+  </script>
+
+</body>
+</html>
